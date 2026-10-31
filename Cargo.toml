@@ -1,0 +1,17 @@
+[package]
+name = "reap"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Clear finished git worktrees and build caches, and measure the space you'd really get back (APFS clone-aware)."
+license = "MIT"
+repository = "https://github.com/johnmikel/reap"
+readme = "README.md"
+keywords = ["git", "worktree", "disk-space", "apfs", "cleanup"]
+categories = ["command-line-utilities", "development-tools", "filesystem"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
