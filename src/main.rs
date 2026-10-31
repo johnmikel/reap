@@ -27,10 +27,14 @@ usage:
                                          list again, ask, then clear: worktrees in repositories with a
                                          close hook go through it; everything else moves to a dated
                                          folder in the Trash
+  reap size PATH...                      what deleting each folder would really give back, next to
+                                         what du says
+  reap --version
 
 A worktree is safe only with no uncommitted changes, every commit merged into the remote's main
-(or pushed), no env file of its own, and no recent git activity. Sizes count shared (cloned)
-blocks once, and only when every copy goes, so they are what emptying the Trash gives back.
+(or pushed), no env file of its own, no program running inside it, and no recent git activity.
+Sizes count shared (cloned) blocks once, and only when every copy goes, so they are what
+emptying the Trash gives back.
 
 Settings live in ~/.config/reap/config:
   root = ~/code
@@ -146,6 +150,9 @@ fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Ve
 struct Scan {
     safe: Vec<Item>,
     kept: Vec<Item>,
+    /// What clearing everything safe frees, counting data the items share with each other.
+    total: Size,
+    group_totals: BTreeMap<Group, Size>,
     repos: usize,
     worktrees: usize,
     caches: usize,
@@ -167,8 +174,13 @@ fn scan(a: &Args, cfg: &Config) -> Scan {
         }
     }
     let worktrees = wts.len();
+    let in_use = plan::working_dirs();
     let items = parallel_map(&wts, |(r, b, h, wt)| {
-        plan::classify_worktree(r, b.as_deref(), wt, now, a.idle, h.as_deref())
+        if plan::is_busy(&wt.path, &in_use) {
+            plan::busy(r, wt)
+        } else {
+            plan::classify_worktree(r, b.as_deref(), wt, now, a.idle, h.as_deref())
+        }
     });
     let (mut safe, kept): (Vec<Item>, Vec<Item>) = items.into_iter().partition(|i| i.action.is_some());
     let projects = plan::find_projects(&a.roots, &repos);
@@ -182,14 +194,22 @@ fn scan(a: &Args, cfg: &Config) -> Scan {
     safe.sort_by(|x, y| x.path.cmp(&y.path));
     safe.dedup_by(|x, y| x.path == y.path);
     let paths: Vec<PathBuf> = safe.iter().map(|i| i.path.clone()).collect();
-    for (item, size) in safe.iter_mut().zip(size::measure_all(&paths)) {
+    let measured = size::measure_all(&paths);
+    for (item, size) in safe.iter_mut().zip(measured.sizes()) {
         item.size = size;
+    }
+    let total = measured.total(0..safe.len());
+    let mut group_totals = BTreeMap::new();
+    for g in [Group::Worktree, Group::Cache, Group::Xcode] {
+        group_totals.insert(g, measured.total((0..safe.len()).filter(|&i| safe[i].group == g)));
     }
     safe.retain(|i| i.size.du > 0 || i.group == Group::Worktree);
     safe.sort_by_key(|i| (i.group, std::cmp::Reverse(i.size.freed)));
     Scan {
         safe,
         kept,
+        total,
+        group_totals,
         repos: repos.len(),
         worktrees,
         caches: n_caches,
@@ -215,14 +235,19 @@ fn group_title(g: Group) -> &'static str {
 
 fn print_report(s: &Scan, a: &Args, st: &Style) {
     let all: Vec<&Item> = s.safe.iter().collect();
-    let t = total(&all);
+    let t = s.total;
+    let count = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     println!(
-        "{} {} repos, {} worktrees and {} build folders checked in {:.0} s",
+        "{} {}, {} and {} checked in {}",
         st.bold("reap ·"),
-        s.repos,
-        s.worktrees,
-        s.caches,
-        s.secs
+        count(s.repos, "repo", "repos"),
+        count(s.worktrees, "worktree", "worktrees"),
+        count(s.caches, "build folder", "build folders"),
+        if s.secs < 1.0 {
+            "under a second".to_string()
+        } else {
+            format!("{:.0} s", s.secs)
+        }
     );
     if s.safe.is_empty() {
         println!("\nNothing is safe to clear right now.");
@@ -245,11 +270,8 @@ fn print_report(s: &Scan, a: &Args, st: &Style) {
             groups.entry(i.group).or_default().push(i);
         }
         for (g, items) in &groups {
-            println!(
-                "\n  {}  {}",
-                st.bold(group_title(*g)),
-                st.dim(&human(total(items).freed))
-            );
+            let freed = s.group_totals.get(g).map_or_else(|| total(items).freed, |t| t.freed);
+            println!("\n  {}  {}", st.bold(group_title(*g)), st.dim(&human(freed)));
             let shown = if a.all { items.len() } else { SHOWN.min(items.len()) };
             for i in &items[..shown] {
                 let label: String = i.label.chars().take(width).collect();
@@ -263,6 +285,17 @@ fn print_report(s: &Scan, a: &Args, st: &Style) {
                         "and {} more, {} (reap --all lists them)",
                         rest.len(),
                         human(total(&rest).freed)
+                    ))
+                );
+            }
+            // Clones shared between these items are freed only when they all go.
+            let shared = freed.saturating_sub(total(items).freed);
+            if shared >= 1_000_000 {
+                println!(
+                    "    {}",
+                    st.dim(&format!(
+                        "+ {} of cloned data they share with each other, freed when they go together",
+                        human(shared)
                     ))
                 );
             }
@@ -381,8 +414,14 @@ fn cmd_clean(a: &Args, cfg: &Config) -> Result<(), String> {
     let trash = trash_root().join(format!("reap {stamp}"));
     let (mut freed_now, mut in_trash, mut failed) = (0u64, 0u64, 0usize);
     let mut warnings: Vec<String> = Vec::new();
+    // Something may have started in a worktree while the list was on screen.
+    let in_use = plan::working_dirs();
     for i in &s.safe {
+        let worktree = matches!(i.action, Some(Action::Hook { .. } | Action::TrashWorktree { .. }));
         let result: Result<(), String> = match &i.action {
+            _ if worktree && plan::is_busy(&i.path, &in_use) => {
+                Err("a program is running in it now; left alone".into())
+            }
             Some(Action::Hook { command, repo }) => {
                 let out = Command::new("sh")
                     .arg("-c")
@@ -460,6 +499,42 @@ fn cmd_clean(a: &Args, cfg: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// `reap size PATH...`: what deleting each folder would really give back, next to du.
+fn cmd_size(rest: &[String]) -> Result<(), String> {
+    let st = Style::new();
+    if rest.is_empty() {
+        return Err("name one or more folders, e.g. reap size ~/Library/Developer node_modules".into());
+    }
+    let paths: Vec<PathBuf> = rest
+        .iter()
+        .map(|p| PathBuf::from(p).canonicalize().map_err(|e| format!("{p}: {e}")))
+        .collect::<Result<_, _>>()?;
+    let measured = size::measure_all(&paths);
+    let width = rest.iter().map(|p| p.chars().count()).max().unwrap_or(10).clamp(10, 60);
+    for (label, s) in rest.iter().zip(measured.sizes()) {
+        println!(
+            "{label:<width$}  {:>8}  {}",
+            human(s.freed),
+            st.dim(&format!("du says {}", human(s.du)))
+        );
+    }
+    if paths.len() > 1 {
+        let t = measured.total(0..paths.len());
+        println!(
+            "{:<width$}  {:>8}  {}",
+            st.bold("together"),
+            st.bold(&human(t.freed)),
+            st.dim(&format!("du says {}", human(t.du)))
+        );
+    }
+    println!(
+        "{}",
+        st.dim("The first column is what deleting the folder would give back: cloned data counts once,")
+    );
+    println!("{}", st.dim("and only when every copy is inside."));
+    Ok(())
+}
+
 fn move_to(path: &Path, trash: &Path, name: &str) -> Result<(), String> {
     std::fs::create_dir_all(trash).map_err(|e| format!("couldn't make the Trash folder: {e}"))?;
     let mut dest = trash.join(name);
@@ -482,7 +557,7 @@ fn main() {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (cmd, rest) = match args.first().map(String::as_str) {
-        Some(c @ ("clean" | "help" | "--help" | "-h")) => (c, &args[1..]),
+        Some(c @ ("clean" | "size" | "help" | "--help" | "-h" | "--version" | "-V")) => (c, &args[1..]),
         _ => ("report", &args[..]),
     };
     let result = match cmd {
@@ -490,6 +565,11 @@ fn main() {
             print!("{HELP}");
             Ok(())
         }
+        "--version" | "-V" => {
+            println!("reap {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        "size" => cmd_size(rest),
         _ => Config::load(&home()).and_then(|cfg| {
             let a = parse(rest, &cfg)?;
             if cmd == "clean" {

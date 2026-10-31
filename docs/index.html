@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reap: the real size of your worktrees</title>
+<meta name="description" content="See how much space your git worktrees and build caches really take on a Mac, and clear the finished ones safely.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+  /* A terminal-dark page around two real screenshots: the numbers are the design. */
+  :root {
+    color-scheme: dark;
+    --bg: #0b0e13;
+    --panel: #11161d;
+    --rule: #252c36;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --bright: #f0f6fc;
+    --amber: #e3b341;
+    --blue: #79c0ff;
+    --sans: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 var(--sans); }
+  main { max-width: 880px; margin: 0 auto; padding: 56px max(20px, env(safe-area-inset-left)) 72px; }
+  h1 { font: 600 44px/1.1 var(--mono); color: var(--bright); margin: 0 0 14px; letter-spacing: -0.02em; }
+  h1 span { color: var(--amber); }
+  .lede { font-size: 21px; color: var(--bright); max-width: 34em; margin: 0 0 28px; text-wrap: balance; }
+  .install { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 40px; }
+  .cmd { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--rule);
+         border-radius: 8px; padding: 10px 12px 10px 16px; font: 15px var(--mono); color: var(--bright); max-width: 100%; }
+  .cmd code { overflow-x: auto; white-space: nowrap; }
+  .cmd code::before { content: "$ "; color: #3fb950; }
+  button { font: 600 13px var(--sans); color: var(--bg); background: var(--amber); border: 0; border-radius: 6px;
+           padding: 6px 12px; cursor: pointer; }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  a { color: var(--blue); }
+  .gh { font-size: 15px; }
+  figure { margin: 0 0 12px; overflow-x: auto; }
+  figure img { display: block; max-width: 100%; height: auto; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 28px; margin: 48px 0; }
+  .facts h2 { font: 600 15px var(--mono); color: var(--amber); margin: 0 0 6px; letter-spacing: 0.02em; }
+  .facts p { margin: 0; color: var(--text); font-size: 16px; }
+  .proof { border-left: 3px solid var(--amber); padding: 4px 0 4px 18px; margin: 40px 0; color: var(--bright); }
+  .proof strong { font-family: var(--mono); }
+  h3 { font: 600 20px var(--sans); color: var(--bright); margin: 48px 0 10px; }
+  footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--rule); margin-top: 56px; padding-top: 20px; }
+  @media (max-width: 560px) { h1 { font-size: 34px; } .lede { font-size: 18px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>reap<span>.</span></h1>
+  <p class="lede">See how much space your git worktrees and build caches really take, and clear the finished ones safely.</p>
+
+  <div class="install">
+    <div class="cmd"><code id="install">brew install johnmikel/tap/reap</code><button id="copy" type="button">Copy</button></div>
+    <a class="gh" href="https://github.com/johnmikel/reap">Source on GitHub</a>
+  </div>
+
+  <figure>
+    <img src="demo.svg" width="693" height="464" alt="reap's report on a made-up example: 708 MB really safe to clear, where du would say 1.5 GB">
+    <figcaption>A made-up example: three finished worktrees whose node_modules are clones of each other, and a prototype idle for two months.</figcaption>
+  </figure>
+
+  <p class="proof">On one real Mac with 251 worktrees, du said <strong>74 GB</strong> could be cleared. reap measured <strong>23 GB</strong>.</p>
+
+  <section class="facts">
+    <div>
+      <h2>Real sizes</h2>
+      <p>APFS clones count once, and only when every copy goes. du, Finder and most disk tools count each copy in full.</p>
+    </div>
+    <div>
+      <h2>Safe around agents</h2>
+      <p>No uncommitted changes, every commit merged, no env file of its own, nothing running inside, idle for days.</p>
+    </div>
+    <div>
+      <h2>Nothing deleted outright</h2>
+      <p>Cleared folders go to a dated folder in the Trash. Teams with their own close script can plug it in.</p>
+    </div>
+  </section>
+
+  <h3>Measure any folder</h3>
+  <figure>
+    <img src="size.svg" width="873" height="204" alt="reap size on three worktrees: each frees 12 KB alone, 400 MB together, where du says 1.2 GB">
+  </figure>
+
+  <footer>MIT licensed · Rust standard library only · <a href="https://github.com/johnmikel/reap#readme">Read the docs</a></footer>
+</main>
+<script>
+  document.getElementById("copy").addEventListener("click", async (e) => {
+    const text = document.getElementById("install").textContent;
+    try { await navigator.clipboard.writeText(text); e.target.textContent = "Copied"; }
+    catch { getSelection().selectAllChildren(document.getElementById("install")); }
+    setTimeout(() => (e.target.textContent = "Copy"), 1500);
+  });
+</script>
+</body>
+</html>

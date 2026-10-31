@@ -65,6 +65,7 @@ pub enum Keep {
     Recent,
     EnvFile,
     Locked,
+    Busy,
     Unreadable,
 }
 
@@ -76,6 +77,7 @@ impl Keep {
             Keep::Recent => "recent git activity",
             Keep::EnvFile => "an env file of their own",
             Keep::Locked => "a lock",
+            Keep::Busy => "a program running inside (an agent, a server, a shell)",
             Keep::Unreadable => "a state git couldn't read",
         }
     }
@@ -132,6 +134,68 @@ pub fn find_repos(roots: &[PathBuf]) -> Vec<PathBuf> {
     out.sort();
     out.dedup();
     out
+}
+
+/// Folders running programs are working in, so an agent mid-task, a dev server or a shell
+/// parked in a worktree keeps it. reap's own process doesn't count.
+pub fn working_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let me = std::process::id().to_string();
+        fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()) && n != me)
+            })
+            .filter_map(|e| fs::read_link(e.path().join("cwd")).ok())
+            .collect()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Ok(out) = std::process::Command::new("lsof")
+            .args(["-a", "-d", "cwd", "-F", "pn", "-w"])
+            .stderr(std::process::Stdio::null())
+            .output()
+        else {
+            return vec![];
+        };
+        let me = format!("p{}", std::process::id());
+        let mut mine = false;
+        let mut dirs = Vec::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if line.starts_with('p') {
+                mine = line == me;
+            } else if let (false, Some(path)) = (mine, line.strip_prefix('n')) {
+                dirs.push(PathBuf::from(path));
+            }
+        }
+        dirs
+    }
+}
+
+pub fn is_busy(path: &Path, dirs: &[PathBuf]) -> bool {
+    dirs.iter().any(|d| d.starts_with(path))
+}
+
+/// A worktree something is running in.
+pub fn busy(repo: &Path, wt: &Worktree) -> Item {
+    let branch = wt
+        .branch
+        .clone()
+        .unwrap_or_else(|| format!("detached {}", &wt.head[..wt.head.len().min(8)]));
+    Item {
+        path: wt.path.clone(),
+        group: Group::Worktree,
+        label: format!("{} · {branch}", name(repo)),
+        detail: "a program is running in it".into(),
+        action: None,
+        keep: Some(Keep::Busy),
+        size: Size::default(),
+    }
 }
 
 /// An env file in the worktree that the main checkout doesn't have, byte for byte.
@@ -499,6 +563,24 @@ mod tests {
             Some(Action::TrashWorktree { repo: app.clone() }),
             "{no_hook:?}"
         );
+    }
+
+    #[test]
+    fn a_program_running_in_a_worktree_marks_it_busy() {
+        let t = Tmp::new("busy");
+        let parked = t.0.join("parked");
+        fs::create_dir_all(&parked).unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(&parked)
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let dirs = working_dirs();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(is_busy(&parked, &dirs), "sleep's folder should show up as in use");
+        assert!(!is_busy(&t.0.join("idle"), &dirs));
     }
 
     #[test]

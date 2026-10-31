@@ -119,15 +119,24 @@ pub struct Size {
     pub files: u64,
 }
 
+#[derive(Clone, Copy)]
 struct Family {
     refs: u32,
     seen: u32,
     shared: u64,
 }
 
-/// Walk a folder without following links and size it both ways.
-pub fn measure(root: &Path) -> Size {
+/// One folder's walk: its own size, plus the clone families it touches, so folders cleared
+/// together can also count the data they share only with each other.
+pub struct Walk {
+    pub size: Size,
+    private: u64,
+    families: HashMap<u64, Family>,
+}
+
+fn walk(root: &Path) -> Walk {
     let mut s = Size::default();
+    let mut private = 0u64;
     let mut links = HashSet::new();
     let mut families: HashMap<u64, Family> = HashMap::new();
     let mut stack = vec![root.to_path_buf()];
@@ -160,7 +169,7 @@ pub fn measure(root: &Path) -> Size {
                     clone_refs,
                 }) => {
                     let p = p.min(alloc);
-                    s.freed += p;
+                    private += p;
                     if let (true, Some(id), Some(refs)) = (alloc > p, clone_id, clone_refs) {
                         let f = families.entry(id).or_insert(Family {
                             refs,
@@ -171,34 +180,84 @@ pub fn measure(root: &Path) -> Size {
                         f.shared = f.shared.max(alloc - p);
                     }
                 }
-                _ => s.freed += alloc,
+                _ => private += alloc,
             }
         }
     }
     // Blocks shared only among files inside this folder are freed with it, once.
-    s.freed += families
-        .values()
+    s.freed = private + contained(families.values());
+    Walk {
+        size: s,
+        private,
+        families,
+    }
+}
+
+/// Shared bytes of the families whose every member was seen.
+fn contained<'a>(families: impl Iterator<Item = &'a Family>) -> u64 {
+    families
         .filter(|f| f.refs > 0 && f.seen >= f.refs)
         .map(|f| f.shared)
-        .sum::<u64>();
-    s
+        .sum()
+}
+
+/// Walk a folder without following links and size it both ways.
+pub fn measure(root: &Path) -> Size {
+    walk(root).size
+}
+
+/// Several folders' walks, for per-folder sizes and for what clearing a set of them frees.
+pub struct Measured {
+    walks: Vec<Walk>,
+}
+
+impl Measured {
+    pub fn sizes(&self) -> Vec<Size> {
+        self.walks.iter().map(|w| w.size).collect()
+    }
+
+    /// What clearing the chosen folders together frees: data they share only with each
+    /// other counts once, which per-folder sizes can't see.
+    pub fn total(&self, which: impl IntoIterator<Item = usize>) -> Size {
+        let mut t = Size::default();
+        let mut families: HashMap<u64, Family> = HashMap::new();
+        for i in which {
+            let w = &self.walks[i];
+            t.du += w.size.du;
+            t.files += w.size.files;
+            t.freed += w.private;
+            for (id, f) in &w.families {
+                let all = families.entry(*id).or_insert(Family {
+                    refs: f.refs,
+                    seen: 0,
+                    shared: 0,
+                });
+                all.seen += f.seen;
+                all.shared = all.shared.max(f.shared);
+            }
+        }
+        t.freed += contained(families.values());
+        t
+    }
 }
 
 /// Measure several folders on all cores.
-pub fn measure_all(roots: &[PathBuf]) -> Vec<Size> {
+pub fn measure_all(roots: &[PathBuf]) -> Measured {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(12);
     let next = AtomicUsize::new(0);
-    let out: Vec<Mutex<Size>> = roots.iter().map(|_| Mutex::new(Size::default())).collect();
+    let out: Vec<Mutex<Option<Walk>>> = roots.iter().map(|_| Mutex::new(None)).collect();
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(root) = roots.get(i) else { break };
-                *out[i].lock().unwrap() = measure(root);
+                *out[i].lock().unwrap() = Some(walk(root));
             });
         }
     });
-    out.into_iter().map(|m| m.into_inner().unwrap()).collect()
+    Measured {
+        walks: out.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect(),
+    }
 }
 
 pub fn human(bytes: u64) -> String {
@@ -293,6 +352,14 @@ mod tests {
         cp(&inside.join("a"), &outside.join("c"));
         let s = measure(&inside);
         assert_eq!(s.freed, 0, "a copy outside keeps the shared data alive");
+
+        let both = measure_all(&[inside.clone(), outside.clone()]);
+        assert_eq!(both.sizes()[0].freed, 0);
+        assert_eq!(
+            both.total([0, 1]).freed,
+            mb,
+            "clearing both folders frees the shared data once"
+        );
 
         fs::hard_link(outside.join("c"), outside.join("d")).unwrap();
         assert_eq!(measure(&outside).freed, 0, "hard links count only toward du");

@@ -1,27 +1,50 @@
 # reap
 
-Clears git worktrees and build caches that hold nothing you'd lose, and tells you how much space that really frees.
+[![ci](https://github.com/johnmikel/reap/actions/workflows/ci.yml/badge.svg)](https://github.com/johnmikel/reap/actions/workflows/ci.yml)
 
-On one Mac with 251 worktrees, `du` said 74 GB could be cleared. reap measured 23 GB. macOS shares unchanged files between copies (APFS clones), and `du` counts every copy in full. A cautious clean (worktrees idle for a week, build folders in projects idle for a month) took free space from 100 GiB to 110 GiB.
+**See how much space your git worktrees and build caches really take, and clear the finished ones safely.**
+
+![reap's report on a made-up example: 708 MB really safe to clear, where du would say 1.5 GB](docs/demo.svg)
+
+Coding agents and `git worktree add` leave a checkout behind for every task, and each can carry its own `node_modules`, `target` or `.next`. On a Mac, many of those files are APFS clones of each other, so `du`, Finder and most disk tools count the same bytes again and again. reap tells you what deleting them would actually give back, and clears only what holds nothing you'd lose.
+
+On one real Mac with 251 worktrees, `du` said 74 GB could be cleared. reap measured 23 GB. A cautious clean took free space from 100 GiB to 110 GiB.
+
+## Install
 
 ```bash
-cargo install --git https://github.com/johnmikel/reap
-reap          # report only: what is safe to clear, and the space it really frees
-reap clean    # list it again, ask, then clear
+brew install johnmikel/tap/reap
 ```
 
-## What counts as safe
+Or build it with Rust: `cargo install --git https://github.com/johnmikel/reap`. Prebuilt binaries for macOS (Apple silicon and Intel in one file) and Linux are on the [releases page](https://github.com/johnmikel/reap/releases).
+
+## Use
+
+```bash
+reap                 # report only: what is safe to clear, and what it really frees
+reap clean           # list it again, ask, then clear
+reap size PATH...    # what deleting any folder would really free, next to du
+```
+
+`reap size` works on any folder, not just worktrees:
+
+![reap size on three worktrees that share cloned node_modules: each frees 12 KB alone, 400 MB together](docs/size.svg)
+
+## Safe around coding agents
 
 reap offers a worktree only when it holds nothing that exists nowhere else:
 
 - It has no uncommitted or untracked changes.
 - Every commit is merged into the remote's main branch. In repositories without a close hook, pushed to any remote branch also counts.
 - It has no env file (`.env`, `.env.local`, `.dev.vars`, …) that differs from the main checkout's copy.
-- It has had no git activity for `--idle` days (default 3), since another person or agent session may be working in it.
+- No program is running inside it: an agent mid-task, a dev server or a shell all keep it.
+- It has had no git activity for `--idle` days (default 3).
 
-reap offers build folders (`node_modules`, Rust `target`, `.next`, `.turbo`, `.expo`, `.venv`, `Pods`, …) once their project has been idle for `--days` (default 30). With `--xcode`, it also offers Xcode DerivedData that hasn't been touched for two weeks.
+reap reads git with `--no-optional-locks`, so a scan never rewrites the index of a worktree someone else is using. reap checks again for running programs just before it clears anything.
 
-reap reads git with `--no-optional-locks`, so a scan never rewrites the index of a worktree someone else is using.
+To let an agent tidy up after itself, copy [`skills/reap`](skills/reap/SKILL.md) into your agent's skills folder (for Claude Code, `~/.claude/skills/reap`). The agent runs the report, shows you what it found and clears only after you say yes.
+
+reap also offers build folders (`node_modules`, Rust `target`, `.next`, `.turbo`, `.expo`, `.venv`, `Pods`, …) once their project has been idle for `--days` (default 30). With `--xcode`, it also offers Xcode DerivedData that hasn't been touched for two weeks.
 
 ## How clean works
 
@@ -39,11 +62,16 @@ close ~/work = ~/work/scripts/close-worktree {repo} {branch} {base}
 
 For repositories under `~/work`, finished worktrees go through that command instead of the Trash. reap fills in `{repo}`, `{path}`, `{branch}` and `{base}`, shell-quoted. It hands over only worktrees merged into the base, and the hook's own checks have the last word: anything the hook refuses is listed and left alone.
 
-## Sizes
+## How sizes work
 
-For each file, reap asks macOS how many bytes only that file holds, and which clone family it belongs to. Shared data counts once, and only when every file sharing it is inside what's being cleared. Hard-linked files count toward the `du` figure only, since their other links may live elsewhere. The report shows both numbers.
+For each file, reap asks macOS how many bytes only that file holds, and which clone family it belongs to. Shared data counts once, and only when every file sharing it is inside what's being cleared. That's why, in the screenshot above, each worktree alone frees 12 KB but the three together free 400 MB. Hard-linked files count toward the `du` figure only, since their other links may live elsewhere.
 
 Clone-aware sizing needs macOS and APFS. On other systems, reap does everything else the same but reports allocated sizes, like `du`.
+
+## Related tools
+
+- [gh-reaper](https://github.com/ai-ecoverse/gh-reaper) also finds stale worktrees, and can ask GitHub whether a branch's pull request was squash-merged. reap can't detect squash merges, so use gh-reaper if your team squash-merges.
+- `git worktree prune` removes git's records of worktrees whose folders are already gone. reap finds the ones that still exist.
 
 ## Options
 
@@ -57,4 +85,6 @@ Clone-aware sizing needs macOS and APFS. On other systems, reap does everything 
 | `--dry-run` | off | with `clean`: show the list and stop |
 | `--yes` | off | with `clean`: skip the question |
 
-MIT licensed. It uses only the Rust standard library.
+The screenshots come from a made-up example: three finished worktrees whose `node_modules` are APFS clones of each other, two worktrees still in use, and a prototype untouched for two months.
+
+MIT licensed. reap uses only the Rust standard library.

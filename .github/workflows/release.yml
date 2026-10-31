@@ -1,0 +1,45 @@
+name: release
+
+# Pushing a tag like v0.1.0 builds the binaries and attaches them to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos-universal
+          - os: ubuntu-latest
+            name: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-unknown-linux-gnu' }}
+      - name: Build
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            cargo build --release --target aarch64-apple-darwin
+            cargo build --release --target x86_64-apple-darwin
+            lipo -create -output reap target/aarch64-apple-darwin/release/reap target/x86_64-apple-darwin/release/reap
+          else
+            cargo build --release --target x86_64-unknown-linux-gnu
+            cp target/x86_64-unknown-linux-gnu/release/reap reap
+          fi
+          ./reap --version
+          archive="reap-${GITHUB_REF_NAME}-${{ matrix.name }}.tar.gz"
+          tar czf "$archive" reap LICENSE README.md
+          shasum -a 256 "$archive" > "$archive.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            reap-*.tar.gz
+            reap-*.tar.gz.sha256
