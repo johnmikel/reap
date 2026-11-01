@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>reap: the real size of your worktrees</title>
-<meta name="description" content="See how much space your git worktrees and build caches really take on a Mac, and clear the finished ones safely.">
+<title>reap: clear finished worktrees</title>
+<meta name="description" content="Clear the git worktrees your coding agents left behind, but only the finished ones, and see the space you really get back.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
@@ -55,7 +55,7 @@
 <body>
 <main>
   <h1>reap<span>.</span></h1>
-  <p class="lede">See how much space your git worktrees and build caches really take, and clear the finished ones safely.</p>
+  <p class="lede">Clear the git worktrees your coding agents left behind, but only the ones that are really finished.</p>
 
   <div class="install">
     <div class="cmd"><code id="install">brew install johnmikel/tap/reap</code><button id="copy" type="button">Copy</button></div>
@@ -71,12 +71,12 @@
 
   <section class="facts">
     <div>
-      <h2>Real sizes</h2>
-      <p>APFS clones count once, and only when every copy goes. du, Finder and most disk tools count each copy in full.</p>
+      <h2>Only finished work</h2>
+      <p>No uncommitted changes, every commit merged, no env file of its own, nothing running inside, idle for days.</p>
     </div>
     <div>
-      <h2>Safe around agents</h2>
-      <p>No uncommitted changes, every commit merged, no env file of its own, nothing running inside, idle for days.</p>
+      <h2>Real sizes</h2>
+      <p>APFS clones count once, and only when every copy goes. du counts each copy in full.</p>
     </div>
     <div>
       <h2>Nothing deleted outright</h2>

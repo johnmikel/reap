@@ -2,13 +2,13 @@
 
 [![ci](https://github.com/johnmikel/reap/actions/workflows/ci.yml/badge.svg)](https://github.com/johnmikel/reap/actions/workflows/ci.yml)
 
-**See how much space your git worktrees and build caches really take, and clear the finished ones safely.**
+**Clear the git worktrees your coding agents left behind, but only the ones that are really finished.**
 
 ![reap's report on a made-up example: 708 MB really safe to clear, where du would say 1.5 GB](docs/demo.svg)
 
-Coding agents and `git worktree add` leave a checkout behind for every task, and each can carry its own `node_modules`, `target` or `.next`. On a Mac, many of those files are APFS clones of each other, so `du`, Finder and most disk tools count the same bytes again and again. reap tells you what deleting them would actually give back, and clears only what holds nothing you'd lose.
+Coding agents and `git worktree add` leave a checkout behind for every task. Disk cleaners can see those folders, but not whether the work in them exists anywhere else. reap asks git: no uncommitted changes, every commit merged, no env file of its own, nothing running inside, idle for days. Only those worktrees are offered, and they go to the Trash.
 
-On one real Mac with 251 worktrees, `du` said 74 GB could be cleared. reap measured 23 GB. A cautious clean took free space from 100 GiB to 110 GiB.
+It also tells you what clearing them really gives back. Worktrees often share their `node_modules` or `target` as APFS clones, so `du` counts the same bytes again and again. On one real Mac with 251 worktrees, `du` said 74 GB could be cleared. reap measured 23 GB. A cautious clean took free space from 100 GiB to 110 GiB.
 
 ## Install
 
@@ -70,6 +70,7 @@ Clone-aware sizing needs macOS and APFS. On other systems, reap does everything 
 
 ## Related tools
 
+- [Mole](https://github.com/tw93/Mole) is a full Mac cleaner: caches, app leftovers, a disk explorer, and `mo purge` for build folders. Use it for general cleanup. It doesn't look at git worktrees, which is the part reap does.
 - [gh-reaper](https://github.com/ai-ecoverse/gh-reaper) also finds stale worktrees, and can ask GitHub whether a branch's pull request was squash-merged. reap can't detect squash merges, so use gh-reaper if your team squash-merges.
 - `git worktree prune` removes git's records of worktrees whose folders are already gone. reap finds the ones that still exist.
 
